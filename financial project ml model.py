@@ -18,14 +18,104 @@ import yfinance as yf
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import precision_score, accuracy_score
+import time
+import sys
 
 # ============================================================
 # SECTION 1: DATA COLLECTION
 # ============================================================
 
+def download_stock_data(ticker_symbol, period="max", max_retries=3, retry_delay=2):
+    """
+    Download stock data from Yahoo Finance with error handling and retry logic.
+    
+    This function implements production-ready error handling for external API calls:
+    - Retries on transient failures (network issues, rate limits)
+    - Validates data was successfully retrieved
+    - Provides clear error messages for debugging
+    
+    Args:
+        ticker_symbol: Stock ticker symbol (e.g., "AAPL")
+        period: Data period ("max", "1y", "5y", etc.)
+        max_retries: Maximum number of retry attempts for transient failures
+        retry_delay: Initial delay between retries (seconds), doubles each retry
+    
+    Returns:
+        pandas.DataFrame: Stock price history data
+    
+    Raises:
+        SystemExit: If data cannot be retrieved after all retries or if data is invalid
+    """
+    ticker = yf.Ticker(ticker_symbol)
+    
+    # Retry logic for transient network failures
+    for attempt in range(1, max_retries + 1):
+        try:
+            data = ticker.history(period=period)
+            
+            # Validate data was successfully retrieved
+            if data is None:
+                raise ValueError(f"yfinance returned None for {ticker_symbol}")
+            
+            if data.empty:
+                raise ValueError(f"yfinance returned empty DataFrame for {ticker_symbol}")
+            
+            # Validate required columns exist
+            required_columns = ["Open", "High", "Low", "Close", "Volume"]
+            missing_columns = [col for col in required_columns if col not in data.columns]
+            if missing_columns:
+                raise ValueError(
+                    f"Missing required columns in data: {missing_columns}. "
+                    f"Available columns: {list(data.columns)}"
+                )
+            
+            # Validate data quality: check for reasonable data points
+            if len(data) < 100:
+                raise ValueError(
+                    f"Insufficient data retrieved: {len(data)} rows. "
+                    f"Expected at least 100 rows for reliable modeling."
+                )
+            
+            print(f"✓ Successfully downloaded {ticker_symbol} data: {len(data)} rows")
+            return data
+            
+        except (ValueError, KeyError) as e:
+            # Data validation errors: don't retry, fail immediately
+            print(f"ERROR: Data validation failed for {ticker_symbol}: {e}", file=sys.stderr)
+            print(f"Pipeline cannot continue without valid data.", file=sys.stderr)
+            sys.exit(1)
+            
+        except Exception as e:
+            # Network/API errors: retry with exponential backoff
+            if attempt < max_retries:
+                wait_time = retry_delay * (2 ** (attempt - 1))  # Exponential backoff
+                print(
+                    f"WARNING: Failed to download {ticker_symbol} data (attempt {attempt}/{max_retries}): {e}",
+                    file=sys.stderr
+                )
+                print(f"Retrying in {wait_time} seconds...", file=sys.stderr)
+                time.sleep(wait_time)
+            else:
+                # Final attempt failed
+                print(
+                    f"ERROR: Failed to download {ticker_symbol} data after {max_retries} attempts.",
+                    file=sys.stderr
+                )
+                print(
+                    f"Last error: {e}",
+                    file=sys.stderr
+                )
+                print(
+                    f"Possible causes: network connectivity, Yahoo Finance API changes, rate limiting.",
+                    file=sys.stderr
+                )
+                sys.exit(1)
+    
+    # This should never be reached, but added for safety
+    raise RuntimeError("Unexpected error in download_stock_data")
+
 # Download all available historical data for Apple stock
-aapl = yf.Ticker("AAPL")
-aapl = aapl.history(period="max")
+aapl = download_stock_data("AAPL", period="max")
 print("Downloaded AAPL data:")
 print(aapl)
 
